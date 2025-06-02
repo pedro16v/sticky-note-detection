@@ -15,81 +15,109 @@ import argparse
 import base64
 import requests
 from typing import Optional, Tuple
+from dotenv import load_dotenv
+import time
+
+# Load environment variables from .env file
+load_dotenv()
 
 class StickyNoteDetector:
-    def __init__(self, image_path, debug=False):
+    def __init__(self, image_path, debug=None):
         self.image_path = image_path
         self.image = cv2.imread(image_path)
         self.original_image = self.image.copy()
         self.height, self.width = self.image.shape[:2]
-        self.debug = debug
         
-        # Improved color ranges for sticky notes (HSV) - more precise
+        # Load debug mode from environment or parameter
+        self.debug = debug if debug is not None else os.getenv('DEBUG_MODE', 'false').lower() == 'true'
+        
+        # Load detection parameters from environment variables
+        self.min_confidence = float(os.getenv('MIN_CONFIDENCE', '40'))
+        self.overlap_threshold = float(os.getenv('OVERLAP_THRESHOLD', '0.3'))
+        self.size_ratio_threshold = float(os.getenv('SIZE_RATIO_THRESHOLD', '0.1'))
+        
+        # Load shape validation parameters
+        self.min_area_ratio = float(os.getenv('MIN_AREA_RATIO', '0.00002'))
+        self.max_area_ratio = float(os.getenv('MAX_AREA_RATIO', '0.25'))
+        self.min_aspect_ratio = float(os.getenv('MIN_ASPECT_RATIO', '0.2'))
+        self.max_aspect_ratio = float(os.getenv('MAX_ASPECT_RATIO', '5.0'))
+        self.min_extent = float(os.getenv('MIN_EXTENT', '0.3'))
+        self.min_vertices = int(os.getenv('MIN_VERTICES', '3'))
+        self.max_vertices = int(os.getenv('MAX_VERTICES', '20'))
+        self.min_dimension = int(os.getenv('MIN_DIMENSION', '20'))
+        self.absolute_min_area_ratio = float(os.getenv('ABSOLUTE_MIN_AREA_RATIO', '0.001'))
+        
+        # Helper function to parse HSV values from environment
+        def parse_hsv(env_var, default):
+            value = os.getenv(env_var, default)
+            return np.array([int(x) for x in value.split(',')])
+        
+        # Load color ranges from environment variables with fallback defaults
         self.color_ranges = {
             'yellow': {
-                'lower': np.array([22, 100, 120]),  # More saturated yellow only
-                'upper': np.array([30, 255, 255]),
+                'lower': parse_hsv('YELLOW_LOWER', '22,100,120'),
+                'upper': parse_hsv('YELLOW_UPPER', '30,255,255'),
                 'color': (0, 255, 255)  # Yellow in BGR
             },
             'light_yellow': {
-                'lower': np.array([20, 30, 150]),   # Low saturation yellow
-                'upper': np.array([30, 100, 255]),  # Cap at 100 saturation to avoid overlap with yellow
+                'lower': parse_hsv('LIGHT_YELLOW_LOWER', '20,30,150'),
+                'upper': parse_hsv('LIGHT_YELLOW_UPPER', '30,100,255'),
                 'color': (100, 255, 255)  # Light Yellow in BGR
             },
             'orange': {
-                'lower': np.array([8, 120, 100]),   # More saturated orange, narrower range
-                'upper': np.array([18, 255, 255]),  # Reduced upper bound to avoid red overlap
+                'lower': parse_hsv('ORANGE_LOWER', '8,120,100'),
+                'upper': parse_hsv('ORANGE_UPPER', '18,255,255'),
                 'color': (0, 165, 255)  # Orange in BGR
             },
             'red': {
-                'lower': np.array([0, 140, 50]),    # Higher saturation to avoid pink overlap
-                'upper': np.array([6, 255, 255]),   # Reduced upper bound to avoid pink
+                'lower': parse_hsv('RED_LOWER', '0,50,50'),
+                'upper': parse_hsv('RED_UPPER', '10,255,255'),
                 'color': (0, 0, 255)  # Red in BGR
             },
             'red_high': {
-                'lower': np.array([174, 140, 50]),  # Higher saturation, higher hue start
-                'upper': np.array([180, 255, 255]),
+                'lower': parse_hsv('RED_HIGH_LOWER', '150,50,50'),
+                'upper': parse_hsv('RED_HIGH_UPPER', '180,255,255'),
                 'color': (0, 0, 255)  # Red in BGR
             },
-            'pink': {
-                'lower': np.array([155, 60, 80]),   # Higher hue start, higher saturation and value
-                'upper': np.array([175, 255, 255]), # Broader range for pink detection
-                'color': (255, 0, 255)  # Magenta in BGR
-            },
             'green': {
-                'lower': np.array([45, 60, 50]),    # Narrower green range, higher saturation
-                'upper': np.array([75, 255, 255]),  # Reduced upper bound to avoid cyan
+                'lower': parse_hsv('GREEN_LOWER', '45,60,50'),
+                'upper': parse_hsv('GREEN_UPPER', '75,255,255'),
                 'color': (0, 255, 0)  # Green in BGR
             },
             'light_green': {
-                'lower': np.array([40, 30, 150]),   # Low saturation green
-                'upper': np.array([75, 60, 255]),   # Cap at 60 saturation, match green hue range
+                'lower': parse_hsv('LIGHT_GREEN_LOWER', '40,30,150'),
+                'upper': parse_hsv('LIGHT_GREEN_UPPER', '75,60,255'),
                 'color': (150, 255, 150)  # Light green in BGR
             },
             'cyan': {
-                'lower': np.array([80, 60, 50]),    # Higher hue start, higher saturation
-                'upper': np.array([100, 255, 255]), # Broader range for cyan detection
+                'lower': parse_hsv('CYAN_LOWER', '80,30,50'),
+                'upper': parse_hsv('CYAN_UPPER', '100,255,255'),
                 'color': (255, 255, 0)  # Cyan in BGR
             },
             'blue': {
-                'lower': np.array([105, 100, 50]),  # Higher hue start to avoid cyan overlap
-                'upper': np.array([130, 255, 255]),
+                'lower': parse_hsv('BLUE_LOWER', '105,100,50'),
+                'upper': parse_hsv('BLUE_UPPER', '130,255,255'),
                 'color': (255, 100, 0)  # Blue in BGR
             },
             'light_blue': {
-                'lower': np.array([100, 30, 150]),  # Low saturation blue
-                'upper': np.array([130, 100, 255]), # Cap at 100 saturation
+                'lower': parse_hsv('LIGHT_BLUE_LOWER', '100,30,150'),
+                'upper': parse_hsv('LIGHT_BLUE_UPPER', '130,100,255'),
                 'color': (255, 200, 150)  # Light blue in BGR
             },
             'purple': {
-                'lower': np.array([130, 50, 50]),   # Purple/violet range
-                'upper': np.array([150, 255, 255]),
+                'lower': parse_hsv('PURPLE_LOWER', '130,50,50'),
+                'upper': parse_hsv('PURPLE_UPPER', '150,255,255'),
                 'color': (255, 0, 128)  # Purple in BGR
             },
-            'light_pink': {
-                'lower': np.array([150, 20, 150]),  # Very light pink, different hue from pink
-                'upper': np.array([160, 50, 255]),  # Lower saturation than regular pink
-                'color': (255, 150, 255)  # Light pink in BGR
+            'light_red': {
+                'lower': parse_hsv('LIGHT_RED_LOWER', '0,30,120'),
+                'upper': parse_hsv('LIGHT_RED_UPPER', '10,140,255'),
+                'color': (100, 100, 255)  # Light red in BGR
+            },
+            'light_red_high': {
+                'lower': parse_hsv('LIGHT_RED_HIGH_LOWER', '150,30,120'),
+                'upper': parse_hsv('LIGHT_RED_HIGH_UPPER', '180,140,255'),
+                'color': (100, 100, 255)  # Light red in BGR
             }
         }
         
@@ -149,7 +177,7 @@ class StickyNoteDetector:
         rejection_reasons = []
         
         # 1. Minimum area (adaptive based on image size) - MUCH MORE RELAXED
-        min_area_ratio = 0.00002  # 0.002% of image area (was 0.01%)
+        min_area_ratio = self.min_area_ratio
         min_area = self.width * self.height * min_area_ratio
         validation_scores['area'] = area >= min_area
         if area < min_area:
@@ -157,7 +185,7 @@ class StickyNoteDetector:
             rejection_reasons.append(f"area too small: {area:.0f} < {min_area:.0f}")
             
         # 2. Maximum area (to avoid detecting entire image sections)
-        max_area_ratio = 0.25  # 25% of image area (was 20%)
+        max_area_ratio = self.max_area_ratio
         max_area = self.width * self.height * max_area_ratio
         validation_scores['max_area'] = area <= max_area
         if area > max_area:
@@ -165,25 +193,25 @@ class StickyNoteDetector:
             rejection_reasons.append(f"area too large: {area:.0f} > {max_area:.0f}")
             
         # 3. Aspect ratio (sticky notes are somewhat square) - MUCH MORE RELAXED
-        validation_scores['aspect_ratio'] = 0.2 < aspect_ratio < 5.0  # (was 0.3-3.5)
-        if not (0.2 < aspect_ratio < 5.0):
+        validation_scores['aspect_ratio'] = self.min_aspect_ratio < aspect_ratio < self.max_aspect_ratio
+        if not (self.min_aspect_ratio < aspect_ratio < self.max_aspect_ratio):
             is_valid = False
             rejection_reasons.append(f"bad aspect ratio: {aspect_ratio:.2f}")
             
         # 4. Extent (how much the contour fills its bounding box) - MUCH MORE RELAXED
-        validation_scores['extent'] = extent > 0.3  # (was 0.5)
-        if extent < 0.3:
+        validation_scores['extent'] = extent > self.min_extent
+        if extent < self.min_extent:
             is_valid = False
             rejection_reasons.append(f"low extent: {extent:.2f}")
             
         # 5. Rectangularity (4-6 vertices for a rectangle-like shape) - MORE RELAXED
-        validation_scores['vertices'] = 3 <= len(approx) <= 20  # (was 3-12)
-        if not (3 <= len(approx) <= 20):
+        validation_scores['vertices'] = self.min_vertices <= len(approx) <= self.max_vertices
+        if not (self.min_vertices <= len(approx) <= self.max_vertices):
             is_valid = False
             rejection_reasons.append(f"bad vertex count: {len(approx)}")
             
         # 6. Minimum dimensions - MUCH MORE RELAXED
-        min_dimension = 20  # pixels (was 30)
+        min_dimension = self.min_dimension
         validation_scores['min_dimension'] = w >= min_dimension and h >= min_dimension
         if w < min_dimension or h < min_dimension:
             is_valid = False
@@ -210,8 +238,17 @@ class StickyNoteDetector:
                                    self.color_ranges['red_high']['lower'],
                                    self.color_ranges['red_high']['upper'])
             mask = cv2.bitwise_or(mask_low, mask_high)
-        elif color_name == 'red_high':
-            # Skip red_high as it's handled by red
+        elif color_name == 'light_red':
+            # Light red also wraps around in HSV
+            mask_low = cv2.inRange(hsv_enhanced, 
+                                  self.color_ranges['light_red']['lower'],
+                                  self.color_ranges['light_red']['upper'])
+            mask_high = cv2.inRange(hsv_enhanced, 
+                                   self.color_ranges['light_red_high']['lower'],
+                                   self.color_ranges['light_red_high']['upper'])
+            mask = cv2.bitwise_or(mask_low, mask_high)
+        elif color_name in ['red_high', 'light_red_high']:
+            # Skip these as they're handled by red and light_red
             return []
         else:
             # Create mask for the color
@@ -274,13 +311,13 @@ class StickyNoteDetector:
             'light_blue': ['blue'],
             'green': ['light_green'],
             'light_green': ['green'],
-            'pink': ['light_pink'],  # Removed red overlap since ranges are now separated
-            'light_pink': ['pink'],
-            'red': ['red_high'],  # Only merge red variants, not pink
-            'red_high': ['red'],
+            'red': ['red_high', 'light_red', 'light_red_high'],  # Include all red variants (including former pink)
+            'red_high': ['red', 'light_red', 'light_red_high'],
+            'light_red': ['red', 'red_high', 'light_red_high'],
+            'light_red_high': ['red', 'red_high', 'light_red'],
             'orange': [],  # Orange is distinct
             'purple': [],  # Purple is distinct
-            'cyan': []     # Cyan is distinct
+            'cyan': []     # Cyan is now a single broad range
         }
             
         merged = []
@@ -420,7 +457,7 @@ class StickyNoteDetector:
         
         # Also set an absolute minimum based on image size
         # A real sticky note should be at least 0.001% of the image (10x higher than shape validation)
-        absolute_min = self.width * self.height * 0.001
+        absolute_min = self.width * self.height * self.absolute_min_area_ratio
         min_area_threshold = max(min_area_threshold, absolute_min)
         
         filtered = []
@@ -458,20 +495,20 @@ class StickyNoteDetector:
         # Sort by area (largest first) and merge overlapping
         all_regions.sort(key=lambda x: x['area'], reverse=True)
         # Higher threshold = less aggressive merging
-        merged_regions = self.merge_overlapping_regions(all_regions, overlap_threshold=0.5)  # Was 0.15
+        merged_regions = self.merge_overlapping_regions(all_regions, overlap_threshold=self.overlap_threshold)
         
         if self.debug:
             print(f"Total regions after merging: {len(merged_regions)}")
             self.debug_info['post_merge_count'] = len(merged_regions)
         
         # Filter by confidence - MUCH LOWER THRESHOLD
-        filtered_regions = self.filter_by_confidence(merged_regions, min_confidence=40)  # Was 50
+        filtered_regions = self.filter_by_confidence(merged_regions, min_confidence=self.min_confidence)
         
         if self.debug:
             print(f"Total regions after confidence filter: {len(filtered_regions)}")
         
         # NEW: Filter by relative size to remove tiny false positives
-        size_filtered_regions = self.filter_by_relative_size(filtered_regions, size_ratio_threshold=0.1)
+        size_filtered_regions = self.filter_by_relative_size(filtered_regions, size_ratio_threshold=self.size_ratio_threshold)
         
         if self.debug:
             print(f"Total regions after size filter: {len(size_filtered_regions)}")
@@ -551,57 +588,142 @@ class StickyNoteDetector:
             return "", 0.0
     
     def transcribe_with_chatgpt(self, image_path: str, api_key: str) -> Tuple[str, float]:
-        """Transcribe text using ChatGPT API"""
+        """Transcribe text using ChatGPT API with retry logic"""
+        max_retries = 3
+        base_delay = 1  # Start with 1 second delay
+        
+        for attempt in range(max_retries):
+            try:
+                base64_image = self.encode_image_to_base64(image_path)
+                
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+                
+                data = {
+                    "model": "gpt-4o-mini",  # More cost-effective vision model
+                    "messages": [{
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Please transcribe any text you see in this sticky note image. If the text is handwritten, do your best to interpret it. Only return the transcribed text, nothing else."
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }],
+                    "max_tokens": 300
+                }
+                
+                response = requests.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers=headers,
+                    json=data,
+                    timeout=30
+                )
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    text = result['choices'][0]['message']['content'].strip()
+                    # Confidence is not directly provided by ChatGPT, so we'll use a high value for successful transcriptions
+                    confidence = 95.0 if text else 0.0
+                    return text, confidence
+                elif response.status_code == 429:  # Rate limit error
+                    if attempt < max_retries - 1:
+                        # Extract wait time from error message if available
+                        try:
+                            error_data = response.json()
+                            error_message = error_data.get('error', {}).get('message', '')
+                            if 'Please try again in' in error_message:
+                                # Extract wait time (e.g., "242ms" or "1.5s")
+                                import re
+                                wait_match = re.search(r'try again in (\d+(?:\.\d+)?)(ms|s)', error_message)
+                                if wait_match:
+                                    wait_time = float(wait_match.group(1))
+                                    unit = wait_match.group(2)
+                                    if unit == 'ms':
+                                        wait_time = wait_time / 1000
+                                    delay = max(wait_time, base_delay * (2 ** attempt))
+                                else:
+                                    delay = base_delay * (2 ** attempt)
+                            else:
+                                delay = base_delay * (2 ** attempt)
+                        except:
+                            delay = base_delay * (2 ** attempt)
+                        
+                        print(f"Rate limit hit. Waiting {delay:.1f} seconds before retry {attempt + 1}/{max_retries}...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        print(f"ChatGPT API rate limit exceeded after {max_retries} attempts: {response.text}")
+                        return "", 0.0
+                else:
+                    print(f"ChatGPT API error: {response.status_code} - {response.text}")
+                    return "", 0.0
+                    
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    print(f"Error transcribing with ChatGPT (attempt {attempt + 1}): {e}. Retrying in {delay} seconds...")
+                    time.sleep(delay)
+                else:
+                    print(f"Error transcribing with ChatGPT after {max_retries} attempts: {e}")
+                    return "", 0.0
+        
+        return "", 0.0
+    
+    def transcribe_with_ollama(self, image_path: str, model_name: str = "llava") -> Tuple[str, float]:
+        """Transcribe text using Ollama local LLM"""
         try:
+            import base64
+            
+            # Encode image to base64
             base64_image = self.encode_image_to_base64(image_path)
             
-            headers = {
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json"
+            # Prepare the request payload for Ollama
+            payload = {
+                "model": model_name,
+                "prompt": "Please transcribe any text you see in this sticky note image. If the text is handwritten, do your best to interpret it. Only return the transcribed text, nothing else.",
+                "images": [base64_image],
+                "stream": False
             }
             
-            data = {
-                "model": "gpt-4o-mini",  # More cost-effective vision model
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": "Please transcribe any text you see in this sticky note image. If the text is handwritten, do your best to interpret it. Only return the transcribed text, nothing else."
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }],
-                "max_tokens": 300
-            }
-            
+            # Make request to Ollama API (default port 11434)
+            ollama_url = os.getenv('OLLAMA_URL', 'http://localhost:11434')
             response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=data,
-                timeout=30
+                f"{ollama_url}/api/generate",
+                json=payload,
+                timeout=60  # Longer timeout for local processing
             )
             
             if response.status_code == 200:
                 result = response.json()
-                text = result['choices'][0]['message']['content'].strip()
-                # Confidence is not directly provided by ChatGPT, so we'll use a high value for successful transcriptions
+                text = result.get('response', '').strip()
+                # Confidence is not directly provided by Ollama, so we'll use a high value for successful transcriptions
                 confidence = 95.0 if text else 0.0
                 return text, confidence
             else:
-                print(f"ChatGPT API error: {response.status_code} - {response.text}")
+                print(f"Ollama API error: {response.status_code} - {response.text}")
                 return "", 0.0
                 
+        except ImportError:
+            print("Error: requests library is required for Ollama integration")
+            return "", 0.0
+        except requests.exceptions.ConnectionError:
+            print("Error: Could not connect to Ollama. Make sure Ollama is running on localhost:11434")
+            print("Install Ollama from https://ollama.ai and run: ollama pull llava")
+            return "", 0.0
         except Exception as e:
-            print(f"Error transcribing with ChatGPT: {e}")
+            print(f"Error transcribing with Ollama: {e}")
             return "", 0.0
     
-    def extract_text_with_llm(self, bbox: Tuple[int, int, int, int], note_id: int, llm_provider: str, api_key: str) -> Tuple[str, float]:
+    def extract_text_with_llm(self, bbox: Tuple[int, int, int, int], note_id: int, llm_provider: str, api_key: str = None, ollama_model: str = 'llava') -> Tuple[str, float]:
         """Extract text using LLM instead of local OCR"""
         x, y, w, h = bbox
         
@@ -624,6 +746,8 @@ class StickyNoteDetector:
             return self.transcribe_with_claude(cropped_path, api_key)
         elif llm_provider == 'chatgpt':
             return self.transcribe_with_chatgpt(cropped_path, api_key)
+        elif llm_provider == 'ollama':
+            return self.transcribe_with_ollama(cropped_path, ollama_model)
         else:
             return "", 0.0
     
@@ -743,7 +867,7 @@ class StickyNoteDetector:
         cv2.imwrite(output_path, overlay)
         return output_path
     
-    def process_all_notes(self, transcribe=False, llm_provider=None, api_key=None):
+    def process_all_notes(self, transcribe=False, llm_provider=None, api_key=None, ollama_model='llava'):
         """Complete processing pipeline"""
         print("Detecting sticky notes...")
         notes = self.detect_all_notes()
@@ -757,9 +881,13 @@ class StickyNoteDetector:
         results = []
         
         if transcribe:
-            if llm_provider:
+            if llm_provider and llm_provider != 'ollama':
                 print(f"Extracting text from each note using {llm_provider.upper()}...")
                 print(f"Note: This will make {len(notes)} API calls. Costs may apply.")
+                print("Adding delays between calls to respect rate limits...")
+            elif llm_provider == 'ollama':
+                print(f"Extracting text from each note using Ollama ({ollama_model})...")
+                print("Note: This will use your local Ollama installation.")
             else:
                 print("Extracting text from each note using local OCR...")
         
@@ -767,8 +895,16 @@ class StickyNoteDetector:
             if transcribe:
                 print(f"Processing note {i + 1}/{len(notes)}")
                 # Extract text using LLM or local OCR
-                if llm_provider and api_key:
-                    text, ocr_confidence = self.extract_text_with_llm(note['bbox'], i + 1, llm_provider, api_key)
+                if llm_provider and llm_provider != 'ollama' and api_key:
+                    text, ocr_confidence = self.extract_text_with_llm(note['bbox'], i + 1, llm_provider, api_key, ollama_model)
+                    # Add delay between API calls to respect rate limits
+                    if i < len(notes) - 1:  # Don't delay after the last call
+                        time.sleep(0.5)  # 500ms delay between calls
+                elif llm_provider == 'ollama':
+                    text, ocr_confidence = self.extract_text_with_llm(note['bbox'], i + 1, llm_provider, None, ollama_model)
+                    # Add delay between local LLM calls to prevent overload
+                    if i < len(notes) - 1:  # Don't delay after the last call
+                        time.sleep(0.2)  # Shorter delay for local processing
                 else:
                     text, ocr_confidence = self.extract_text_from_region(note['bbox'], i + 1)
             else:
@@ -794,9 +930,9 @@ class StickyNoteDetector:
                 if os.path.exists(f'cropped_note_{i + 1}.jpg'):
                     os.rename(f'cropped_note_{i + 1}.jpg', 
                              os.path.join(output_dir, f'cropped_note_{i + 1}.jpg'))
-                if os.path.exists(f'cropped_note_{i + 1}_preprocessed.jpg') and not llm_provider:
-                    os.rename(f'cropped_note_{i + 1}_preprocessed.jpg', 
-                             os.path.join(output_dir, f'cropped_note_{i + 1}_preprocessed.jpg'))
+                    if os.path.exists(f'cropped_note_{i + 1}_preprocessed.jpg') and not llm_provider:
+                        os.rename(f'cropped_note_{i + 1}_preprocessed.jpg', 
+                                 os.path.join(output_dir, f'cropped_note_{i + 1}_preprocessed.jpg'))
         
         # Create overlay
         overlay_path = os.path.join(output_dir, 'overlay_result.jpg')
@@ -826,9 +962,12 @@ class StickyNoteDetector:
                 f.write(f"  Detection confidence: {result['detection_confidence']:.1f}%\n")
                 if transcribe:
                     f.write(f"  OCR confidence: {result['ocr_confidence']:.1f}%\n")
-                    f.write(f"  Text: {result['text']}\n")
+                f.write(f"  Text: {result['text']}\n")
                 f.write(f"  Sub-regions: {result['sub_regions']}\n")
                 f.write("-" * 50 + "\n\n")
+        
+        # Create HTML report
+        html_path = self.create_html_report(results, output_dir)
         
         print(f"\nResults saved to: {output_dir}/")
         print(f"- Overlay image: overlay_result.jpg")
@@ -838,24 +977,772 @@ class StickyNoteDetector:
                 print(f"- Preprocessed images: cropped_note_X_preprocessed.jpg")
         print(f"- JSON data: detection_results.json")
         print(f"- Summary: summary.txt")
+        print(f"- HTML report: detection_report.html")
         
         return results, output_dir
+    
+    def create_html_report(self, results, output_dir):
+        """Create an HTML file with a table showing all detected notes"""
+        html_content = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sticky Note Detection Results</title>
+    <style>
+        body {{
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f5f5f5;
+        }}
+        .container {{
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }}
+        h1 {{
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }}
+        .summary {{
+            background-color: #e8f4f8;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+        }}
+        .controls {{
+            background-color: #f0f8ff;
+            padding: 15px;
+            border-radius: 5px;
+            margin-bottom: 20px;
+            text-align: center;
+        }}
+        .btn {{
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 0 5px;
+            font-size: 14px;
+        }}
+        .btn:hover {{
+            background-color: #45a049;
+        }}
+        .btn-secondary {{
+            background-color: #2196F3;
+        }}
+        .btn-secondary:hover {{
+            background-color: #1976D2;
+        }}
+        .btn-warning {{
+            background-color: #ff9800;
+        }}
+        .btn-warning:hover {{
+            background-color: #f57c00;
+        }}
+        .btn-danger {{
+            background-color: #f44336;
+        }}
+        .btn-danger:hover {{
+            background-color: #d32f2f;
+        }}
+        .btn-small {{
+            padding: 5px 10px;
+            font-size: 12px;
+            margin: 2px;
+        }}
+        table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }}
+        th, td {{
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }}
+        th {{
+            background-color: #4CAF50;
+            color: white;
+            font-weight: bold;
+        }}
+        tr:nth-child(even) {{
+            background-color: #f2f2f2;
+        }}
+        tr:hover {{
+            background-color: #e8f4f8;
+        }}
+        .note-image {{
+            max-width: 250px;
+            max-height: 250px;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+        }}
+        .note-image:hover {{
+            border-color: #4CAF50;
+            transform: scale(1.02);
+            transition: all 0.2s ease;
+        }}
+        .details-toggle {{
+            background: none;
+            border: none;
+            color: #666;
+            cursor: pointer;
+            font-size: 12px;
+            padding: 2px 5px;
+            border-radius: 3px;
+        }}
+        .details-toggle:hover {{
+            background-color: #f0f0f0;
+        }}
+        .technical-details {{
+            display: none;
+            margin-top: 10px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+            font-size: 12px;
+            color: #666;
+        }}
+        .technical-details.expanded {{
+            display: block;
+        }}
+        .break-note-btn {{
+            background-color: #17a2b8;
+            color: white;
+            border: none;
+            padding: 3px 8px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 11px;
+            margin: 2px;
+        }}
+        .break-note-btn:hover {{
+            background-color: #138496;
+        }}
+        .sub-row {{
+            background-color: #f0f8ff !important;
+            border-left: 4px solid #17a2b8;
+        }}
+        .sub-row td {{
+            padding-left: 20px;
+            font-style: italic;
+        }}
+        .dismiss-btn {{
+            background-color: #6c757d;
+            color: white;
+            border: none;
+            padding: 2px 6px;
+            border-radius: 3px;
+            cursor: pointer;
+            font-size: 10px;
+        }}
+        .dismiss-btn:hover {{
+            background-color: #545b62;
+        }}
+        .overlay-modal {{
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.8);
+        }}
+        .overlay-content {{
+            position: relative;
+            margin: 2% auto;
+            width: 90%;
+            max-width: 1200px;
+            text-align: center;
+        }}
+        .overlay-image {{
+            max-width: 100%;
+            max-height: 90vh;
+            border-radius: 8px;
+        }}
+        .close-overlay {{
+            position: absolute;
+            top: 10px;
+            right: 25px;
+            color: white;
+            font-size: 35px;
+            font-weight: bold;
+            cursor: pointer;
+        }}
+        .close-overlay:hover {{
+            color: #ccc;
+        }}
+        .view-overlay-btn {{
+            background-color: #6f42c1;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 5px;
+        }}
+        .view-overlay-btn:hover {{
+            background-color: #5a32a3;
+        }}
+        .color-badge {{
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 12px;
+            color: white;
+            font-size: 12px;
+            font-weight: bold;
+            text-transform: uppercase;
+        }}
+        .confidence-bar {{
+            width: 100px;
+            height: 20px;
+            background-color: #e0e0e0;
+            border-radius: 10px;
+            overflow: hidden;
+            display: inline-block;
+            vertical-align: middle;
+        }}
+        .confidence-fill {{
+            height: 100%;
+            border-radius: 10px;
+            transition: width 0.3s ease;
+        }}
+        .bbox {{
+            font-family: monospace;
+            font-size: 12px;
+            color: #666;
+        }}
+        .text-content {{
+            max-width: 300px;
+            word-wrap: break-word;
+        }}
+        .text-input {{
+            width: 100%;
+            min-height: 60px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 8px;
+            font-family: inherit;
+            font-size: 14px;
+            resize: vertical;
+        }}
+        .text-input:focus {{
+            border-color: #4CAF50;
+            outline: none;
+            box-shadow: 0 0 5px rgba(76, 175, 80, 0.3);
+        }}
+        .no-text {{
+            color: #999;
+            font-style: italic;
+        }}
+        .edit-mode .text-display {{
+            display: none;
+        }}
+        .edit-mode .text-input {{
+            display: block;
+        }}
+        .text-input {{
+            display: none;
+        }}
+        .status-message {{
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            display: none;
+        }}
+        .status-success {{
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }}
+        .status-error {{
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }}
+        .row-deleted {{
+            opacity: 0.5;
+            background-color: #ffebee !important;
+            text-decoration: line-through;
+        }}
+        .row-deleted:hover {{
+            background-color: #ffcdd2 !important;
+        }}
+        .delete-column {{
+            width: 120px;
+            text-align: center;
+        }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🗒️ Sticky Note Detection Results</h1>
+        
+        <div class="summary">
+            <h3>Summary</h3>
+            <p><strong>Image:</strong> {image_name}</p>
+            <p><strong>Total Notes Detected:</strong> {total_notes}</p>
+            <p><strong>Processed:</strong> {timestamp}</p>
+            <p><strong>Transcription:</strong> {transcription_method}</p>
+        </div>
+
+        <div class="controls">
+            <button class="btn" onclick="toggleEditMode()">📝 Toggle Edit Mode</button>
+            <button class="btn btn-secondary" onclick="saveEdits()">💾 Save Edits</button>
+            <button class="btn btn-warning" onclick="downloadMarkdown()">📄 Download as Markdown</button>
+            <button class="btn view-overlay-btn" onclick="showOverlay()">🖼️ View Full Image</button>
+            <div id="statusMessage" class="status-message"></div>
+        </div>
+
+        <table id="notesTable">
+            <thead>
+                <tr>
+                    <th>Note #</th>
+                    <th>Image</th>
+                    <th>Transcribed Text</th>
+                    <th class="delete-column">Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {table_rows}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Overlay Modal -->
+    <div id="overlayModal" class="overlay-modal" onclick="hideOverlay()">
+        <div class="overlay-content">
+            <span class="close-overlay" onclick="hideOverlay()">&times;</span>
+            <img id="overlayImage" class="overlay-image" src="overlay_result.jpg" alt="Full Detection Results">
+        </div>
+    </div>
+
+    <script>
+        let editMode = false;
+        let originalData = {original_data};
+        let deletedRows = new Set(); // Track deleted row indices
+        let subNoteCounter = 0; // Counter for sub-notes
+
+        function toggleEditMode() {{
+            editMode = !editMode;
+            const table = document.getElementById('notesTable');
+            const button = document.querySelector('button[onclick="toggleEditMode()"]');
+            
+            if (editMode) {{
+                table.classList.add('edit-mode');
+                button.textContent = '👁️ View Mode';
+                button.style.backgroundColor = '#ff9800';
+                showStatus('Edit mode enabled. Click on text fields to edit.', 'success');
+            }} else {{
+                table.classList.remove('edit-mode');
+                button.textContent = '📝 Toggle Edit Mode';
+                button.style.backgroundColor = '#4CAF50';
+                showStatus('View mode enabled.', 'success');
+            }}
+        }}
+
+        function toggleDetails(index) {{
+            const detailsDiv = document.getElementById(`details-${{index}}`);
+            const button = document.querySelector(`button[onclick="toggleDetails(${{index}})"]`);
+            
+            if (detailsDiv.classList.contains('expanded')) {{
+                detailsDiv.classList.remove('expanded');
+                button.textContent = '📊 Technical Details';
+            }} else {{
+                detailsDiv.classList.add('expanded');
+                button.textContent = '📊 Hide Details';
+            }}
+        }}
+
+        function breakNote(index) {{
+            const row = document.querySelector(`tr[data-note-id="${{index + 1}}"]`);
+            subNoteCounter++;
+            
+            // Create new sub-row
+            const newRow = document.createElement('tr');
+            newRow.className = 'sub-row';
+            newRow.setAttribute('data-parent-id', index + 1);
+            newRow.setAttribute('data-sub-id', subNoteCounter);
+            
+            newRow.innerHTML = `
+                <td><strong>#${{index + 1}}.sub${{subNoteCounter}}</strong></td>
+                <td style="text-align: center; color: #666;">
+                    <em>Sub-note of #${{index + 1}}</em>
+                </td>
+                <td class="text-content">
+                    <div class="text-display"><span class="no-text">Enter text for this sub-note</span></div>
+                    <textarea class="text-input" placeholder="Enter text for this sub-note..."></textarea>
+                </td>
+                <td class="delete-column">
+                    <button class="dismiss-btn" onclick="dismissSubNote(this)" title="Remove this sub-note">
+                        ✖️ Dismiss
+                    </button>
+                </td>
+            `;
+            
+            // Insert after the main row
+            row.parentNode.insertBefore(newRow, row.nextSibling);
+            showStatus(`Sub-note created for Note #${{index + 1}}`, 'success');
+        }}
+
+        function dismissSubNote(button) {{
+            const row = button.closest('tr');
+            const parentId = row.getAttribute('data-parent-id');
+            row.remove();
+            showStatus(`Sub-note removed from Note #${{parentId}}`, 'success');
+        }}
+
+        function showOverlay() {{
+            const modal = document.getElementById('overlayModal');
+            modal.style.display = 'block';
+            document.body.style.overflow = 'hidden'; // Prevent background scrolling
+        }}
+
+        function hideOverlay() {{
+            const modal = document.getElementById('overlayModal');
+            modal.style.display = 'none';
+            document.body.style.overflow = 'auto'; // Restore scrolling
+        }}
+
+        // Close overlay with Escape key
+        document.addEventListener('keydown', function(e) {{
+            if (e.key === 'Escape') {{
+                hideOverlay();
+            }}
+        }});
+
+        function toggleRowDelete(index) {{
+            const row = document.querySelector(`tr[data-note-id="${{index + 1}}"]`);
+            const button = row.querySelector('.btn-danger');
+            
+            if (deletedRows.has(index)) {{
+                // Undelete row
+                deletedRows.delete(index);
+                row.classList.remove('row-deleted');
+                button.textContent = '🗑️ Delete';
+                button.title = 'Mark as false positive';
+                showStatus(`Note #${{index + 1}} restored`, 'success');
+            }} else {{
+                // Delete row
+                deletedRows.add(index);
+                row.classList.add('row-deleted');
+                button.textContent = '↩️ Restore';
+                button.title = 'Restore this note';
+                showStatus(`Note #${{index + 1}} marked for deletion`, 'success');
+            }}
+            
+            updateSummary();
+        }}
+
+        function updateSummary() {{
+            const totalNotes = originalData.length;
+            const deletedCount = deletedRows.size;
+            const activeCount = totalNotes - deletedCount;
+            
+            // Update summary in the page
+            const summaryDiv = document.querySelector('.summary');
+            const totalNotesP = summaryDiv.querySelector('p:nth-child(2)');
+            if (deletedCount > 0) {{
+                totalNotesP.innerHTML = `<strong>Total Notes Detected:</strong> ${{totalNotes}} (Active: ${{activeCount}}, Deleted: ${{deletedCount}})`;
+            }} else {{
+                totalNotesP.innerHTML = `<strong>Total Notes Detected:</strong> ${{totalNotes}}`;
+            }}
+        }}
+
+        function showStatus(message, type) {{
+            const statusDiv = document.getElementById('statusMessage');
+            statusDiv.textContent = message;
+            statusDiv.className = `status-message status-${{type}}`;
+            statusDiv.style.display = 'block';
+            setTimeout(() => {{
+                statusDiv.style.display = 'none';
+            }}, 3000);
+        }}
+
+        function saveEdits() {{
+            const allTextInputs = document.querySelectorAll('.text-input');
+            const editedData = [];
+            
+            // Process main notes (non-deleted)
+            originalData.forEach((item, index) => {{
+                if (!deletedRows.has(index)) {{
+                    const editedItem = JSON.parse(JSON.stringify(item));
+                    const textInput = allTextInputs[index];
+                    if (textInput) {{
+                        editedItem.text = textInput.value;
+                        editedItem.edited = true;
+                        editedItem.edit_timestamp = new Date().toISOString();
+                    }}
+                    editedData.push(editedItem);
+                    
+                    // Check for sub-notes
+                    const subRows = document.querySelectorAll(`tr[data-parent-id="${{index + 1}}"]`);
+                    subRows.forEach(subRow => {{
+                        const subTextInput = subRow.querySelector('.text-input');
+                        if (subTextInput && subTextInput.value.trim()) {{
+                            const subItem = JSON.parse(JSON.stringify(item));
+                            subItem.note_id = `${{item.note_id}}.sub${{subRow.getAttribute('data-sub-id')}}`;
+                            subItem.text = subTextInput.value;
+                            subItem.is_sub_note = true;
+                            subItem.parent_note_id = item.note_id;
+                            subItem.edited = true;
+                            subItem.edit_timestamp = new Date().toISOString();
+                            editedData.push(subItem);
+                        }}
+                    }});
+                }}
+            }});
+
+            // Add metadata about deletions and sub-notes
+            const subNoteCount = document.querySelectorAll('.sub-row').length;
+            const metadata = {{
+                original_count: originalData.length,
+                final_count: editedData.length,
+                deleted_count: deletedRows.size,
+                sub_note_count: subNoteCount,
+                deleted_note_ids: Array.from(deletedRows).map(i => originalData[i].note_id),
+                export_timestamp: new Date().toISOString()
+            }};
+
+            const finalData = {{
+                metadata: metadata,
+                notes: editedData
+            }};
+
+            // Create and download the edited JSON
+            const blob = new Blob([JSON.stringify(finalData, null, 2)], {{
+                type: 'application/json'
+            }});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'edited_detection_results.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            showStatus(`Edits saved! ${{editedData.length}} notes included, ${{deletedRows.size}} deleted, ${{subNoteCount}} sub-notes.`, 'success');
+        }}
+
+        function downloadMarkdown() {{
+            let markdown = '# Sticky Note Transcriptions\\n\\n';
+            let noteNumber = 1;
+            
+            // Process main notes (non-deleted)
+            originalData.forEach((item, index) => {{
+                if (!deletedRows.has(index)) {{
+                    const textInput = document.querySelectorAll('.text-input')[index];
+                    const text = textInput ? textInput.value.trim() : '';
+                    if (text) {{
+                        markdown += `${{noteNumber}}. ${{text}}\\n`;
+                        noteNumber++;
+                    }}
+                    
+                    // Add sub-notes
+                    const subRows = document.querySelectorAll(`tr[data-parent-id="${{index + 1}}"]`);
+                    subRows.forEach(subRow => {{
+                        const subTextInput = subRow.querySelector('.text-input');
+                        const subText = subTextInput ? subTextInput.value.trim() : '';
+                        if (subText) {{
+                            markdown += `${{noteNumber}}. ${{subText}}\\n`;
+                            noteNumber++;
+                        }}
+                    }});
+                }}
+            }});
+
+            if (noteNumber === 1) {{
+                markdown += 'No text content found.\\n';
+            }}
+
+            // Add metadata
+            const subNoteCount = document.querySelectorAll('.sub-row').length;
+            markdown += `\\n---\\n`;
+            markdown += `*Exported: ${{new Date().toLocaleString()}}*\\n`;
+            markdown += `*Total notes: ${{noteNumber - 1}} (from ${{originalData.length}} detected)*\\n`;
+            if (deletedRows.size > 0) {{
+                markdown += `*Excluded ${{deletedRows.size}} false positives*\\n`;
+            }}
+            if (subNoteCount > 0) {{
+                markdown += `*Includes ${{subNoteCount}} sub-notes from broken notes*\\n`;
+            }}
+
+            const blob = new Blob([markdown], {{
+                type: 'text/markdown'
+            }});
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'sticky_notes_transcription.md';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            showStatus(`Markdown downloaded! ${{noteNumber - 1}} notes included.`, 'success');
+        }}
+
+        // Update text displays when inputs change
+        document.addEventListener('input', function(e) {{
+            if (e.target.classList.contains('text-input')) {{
+                const row = e.target.closest('tr');
+                const textDisplay = row.querySelector('.text-display');
+                if (textDisplay) {{
+                    if (e.target.value.trim()) {{
+                        textDisplay.innerHTML = e.target.value;
+                    }} else {{
+                        textDisplay.innerHTML = '<span class="no-text">No text detected</span>';
+                    }}
+                }}
+            }}
+        }});
+    </script>
+</body>
+</html>
+"""
+        
+        # Color mapping for badges
+        color_styles = {
+            'yellow': 'background-color: #FFD700;',
+            'light_yellow': 'background-color: #FFFFE0; color: #333;',
+            'orange': 'background-color: #FF8C00;',
+            'red': 'background-color: #DC143C;',
+            'light_red': 'background-color: #FFB6C1; color: #333;',
+            'green': 'background-color: #32CD32;',
+            'light_green': 'background-color: #90EE90; color: #333;',
+            'blue': 'background-color: #4169E1;',
+            'light_blue': 'background-color: #ADD8E6; color: #333;',
+            'cyan': 'background-color: #00CED1;',
+            'purple': 'background-color: #8A2BE2;'
+        }
+        
+        # Generate table rows
+        table_rows = []
+        for result in results:
+            note_id = result['note_id']
+            color = result['color']
+            bbox = result['bbox']
+            area = result['area']
+            detection_conf = result['detection_confidence']
+            ocr_conf = result['ocr_confidence']
+            text = result['text']
+            
+            # Color badge style
+            color_style = color_styles.get(color, 'background-color: #666;')
+            
+            # Confidence bar color
+            if detection_conf >= 80:
+                conf_color = '#4CAF50'  # Green
+            elif detection_conf >= 60:
+                conf_color = '#FF9800'  # Orange
+            else:
+                conf_color = '#F44336'  # Red
+                
+            # OCR confidence bar color
+            if ocr_conf >= 80:
+                ocr_color = '#4CAF50'  # Green
+            elif ocr_conf >= 60:
+                ocr_color = '#FF9800'  # Orange
+            else:
+                ocr_color = '#F44336'  # Red
+            
+            # Image path
+            image_filename = f"cropped_note_{note_id}.jpg"
+            
+            # Text content
+            text_display = text if text.strip() else '<span class="no-text">No text detected</span>'
+            
+            row = f"""
+                <tr data-note-id="{note_id}">
+                    <td><strong>#{note_id}</strong></td>
+                    <td>
+                        <img src="{image_filename}" alt="Note {note_id}" class="note-image" 
+                             onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <div style="display:none; padding: 20px; background: #f0f0f0; text-align: center; border-radius: 4px;">
+                            Image not found
+                        </div>
+                        <br>
+                        <button class="details-toggle" onclick="toggleDetails({note_id - 1})">
+                            📊 Technical Details
+                        </button>
+                        <div class="technical-details" id="details-{note_id - 1}">
+                            <strong>Color:</strong> <span class="color-badge" style="{color_style}">{color}</span><br>
+                            <strong>Bounding Box:</strong> <span class="bbox">x:{bbox[0]}, y:{bbox[1]}, w:{bbox[2]}, h:{bbox[3]}</span><br>
+                            <strong>Area:</strong> {area:,.0f} px²<br>
+                            <strong>Detection Confidence:</strong> 
+                            <div class="confidence-bar">
+                                <div class="confidence-fill" style="width: {detection_conf}%; background-color: {conf_color};"></div>
+                            </div>
+                            <small>{detection_conf:.1f}%</small><br>
+                            <strong>OCR Confidence:</strong> 
+                            <div class="confidence-bar">
+                                <div class="confidence-fill" style="width: {ocr_conf}%; background-color: {ocr_color};"></div>
+                            </div>
+                            <small>{ocr_conf:.1f}%</small>
+                        </div>
+                    </td>
+                    <td class="text-content">
+                        <div class="text-display">{text_display}</div>
+                        <textarea class="text-input" placeholder="Enter transcribed text...">{text}</textarea>
+                    </td>
+                    <td class="delete-column">
+                        <button class="btn btn-danger btn-small" onclick="toggleRowDelete({note_id - 1})" title="Mark as false positive">
+                            🗑️ Delete
+                        </button>
+                        <br>
+                        <button class="break-note-btn" onclick="breakNote({note_id - 1})" title="Split into multiple notes">
+                            ✂️ Break Note
+                        </button>
+                    </td>
+                </tr>
+            """
+            table_rows.append(row)
+        
+        # Fill in the template
+        html_filled = html_content.format(
+            image_name=os.path.basename(self.image_path),
+            total_notes=len(results),
+            timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            transcription_method=results[0]['transcription_method'] if results else 'None',
+            table_rows=''.join(table_rows),
+            original_data=json.dumps(results)
+        )
+        
+        # Save HTML file
+        html_path = os.path.join(output_dir, 'detection_report.html')
+        with open(html_path, 'w', encoding='utf-8') as f:
+            f.write(html_filled)
+        
+        return html_path
 
 def main():
     parser = argparse.ArgumentParser(description='Detect and transcribe sticky notes')
     parser.add_argument('image_path', help='Path to the input image')
-    parser.add_argument('--tesseract-path', help='Path to tesseract executable (if needed)')
-    parser.add_argument('--debug', action='store_true', help='Enable debug mode to see filtering details')
+    parser.add_argument('--tesseract-path', help='Path to tesseract executable (overrides TESSERACT_PATH env var)')
+    parser.add_argument('--debug', action='store_true', help='Enable debug mode (overrides DEBUG_MODE env var)')
     parser.add_argument('--transcribe', action='store_true', help='Enable OCR transcription of detected notes (default: detection only)')
-    parser.add_argument('--llm', choices=['claude', 'chatgpt'], help='Use LLM for transcription instead of local OCR')
-    parser.add_argument('--api-key', help='API key for the selected LLM provider')
-    parser.add_argument('--api-key-env', help='Environment variable name containing the API key (default: ANTHROPIC_API_KEY for Claude, OPENAI_API_KEY for ChatGPT)')
+    parser.add_argument('--llm', choices=['claude', 'chatgpt', 'ollama'], help='Use LLM for transcription instead of local OCR')
+    parser.add_argument('--api-key', help='API key for the selected LLM provider (overrides env vars)')
+    parser.add_argument('--api-key-env', help='Environment variable name containing the API key')
+    parser.add_argument('--ollama-model', default='llava', help='Ollama model to use for transcription (default: llava)')
     
     args = parser.parse_args()
     
-    # Handle API key
+    # Handle API key - check command line first, then environment variables
     api_key = None
-    if args.llm:
+    if args.llm and args.llm != 'ollama':
         if args.api_key:
             api_key = args.api_key
         else:
@@ -871,22 +1758,31 @@ def main():
         
         # Enable transcription if LLM is selected
         args.transcribe = True
+    elif args.llm == 'ollama':
+        # Ollama doesn't need an API key
+        args.transcribe = True
+        print("Using Ollama for local LLM transcription. Make sure Ollama is running with a vision model.")
+        print(f"Model: {args.ollama_model}")
+        print("If you haven't installed Ollama yet, visit: https://ollama.ai")
+        print(f"To install the model, run: ollama pull {args.ollama_model}")
     
-    # Set tesseract path if provided
-    if args.tesseract_path:
-        pytesseract.pytesseract.tesseract_cmd = args.tesseract_path
+    # Set tesseract path - command line argument takes precedence over environment variable
+    tesseract_path = args.tesseract_path or os.getenv('TESSERACT_PATH')
+    if tesseract_path:
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
     
     # Check if image exists
     if not os.path.exists(args.image_path):
         print(f"Error: Image file '{args.image_path}' not found")
         return
     
-    # Process the image
-    detector = StickyNoteDetector(args.image_path, debug=args.debug)
+    # Process the image - debug parameter from command line takes precedence over env var
+    detector = StickyNoteDetector(args.image_path, debug=args.debug if args.debug else None)
     results, output_dir = detector.process_all_notes(
         transcribe=args.transcribe,
         llm_provider=args.llm,
-        api_key=api_key
+        api_key=api_key,
+        ollama_model=args.ollama_model
     )
     
     print(f"\nProcessing complete! Check '{output_dir}' for results.")
