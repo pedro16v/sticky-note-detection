@@ -22,7 +22,7 @@ import time
 load_dotenv()
 
 class StickyNoteDetector:
-    def __init__(self, image_path, debug=None):
+    def __init__(self, image_path, debug=None, saturation_boost=None):
         self.image_path = image_path
         self.image = cv2.imread(image_path)
         self.original_image = self.image.copy()
@@ -30,6 +30,9 @@ class StickyNoteDetector:
         
         # Load debug mode from environment or parameter
         self.debug = debug if debug is not None else os.getenv('DEBUG_MODE', 'false').lower() == 'true'
+        
+        # Load saturation boost from environment or parameter
+        self.saturation_boost = saturation_boost if saturation_boost is not None else float(os.getenv('SATURATION_BOOST', '1.0'))
         
         # Load detection parameters from environment variables
         self.min_confidence = float(os.getenv('MIN_CONFIDENCE', '40'))
@@ -55,14 +58,24 @@ class StickyNoteDetector:
         # Load color ranges from environment variables with fallback defaults
         self.color_ranges = {
             'yellow': {
-                'lower': parse_hsv('YELLOW_LOWER', '22,100,120'),
-                'upper': parse_hsv('YELLOW_UPPER', '30,255,255'),
+                'lower': parse_hsv('YELLOW_LOWER', '22,50,120'),
+                'upper': parse_hsv('YELLOW_UPPER', '60,255,255'),
                 'color': (0, 255, 255)  # Yellow in BGR
             },
-            'light_yellow': {
-                'lower': parse_hsv('LIGHT_YELLOW_LOWER', '20,30,150'),
-                'upper': parse_hsv('LIGHT_YELLOW_UPPER', '30,100,255'),
-                'color': (100, 255, 255)  # Light Yellow in BGR
+            'greenish_yellow': {
+                'lower': parse_hsv('GREENISH_YELLOW_LOWER', '100,15,80'),
+                'upper': parse_hsv('GREENISH_YELLOW_UPPER', '120,120,255'),
+                'color': (0, 255, 200)  # Greenish Yellow in BGR
+            },
+            'warm_yellow': {
+                'lower': parse_hsv('WARM_YELLOW_LOWER', '155,100,110'),
+                'upper': parse_hsv('WARM_YELLOW_UPPER', '165,120,130'),
+                'color': (0, 200, 255)  # Warm Yellow in BGR
+            },
+            'white': {
+                'lower': parse_hsv('WHITE_LOWER', '0,0,180'),
+                'upper': parse_hsv('WHITE_UPPER', '180,30,255'),
+                'color': (255, 255, 255)  # White in BGR
             },
             'orange': {
                 'lower': parse_hsv('ORANGE_LOWER', '8,120,100'),
@@ -131,8 +144,38 @@ class StickyNoteDetector:
             'post_merge_count': 0
         }
         
+    def enhance_color_saturation(self, image, boost_factor=1.5):
+        """Enhance color saturation to improve color detection"""
+        if boost_factor == 1.0:
+            return image
+            
+        # Convert to HSV for saturation enhancement
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        h, s, v = cv2.split(hsv)
+        
+        # Boost saturation
+        s = s.astype(np.float32)
+        s = s * boost_factor
+        s = np.clip(s, 0, 255)  # Ensure values stay within valid range
+        s = s.astype(np.uint8)
+        
+        # Merge back and convert to BGR
+        enhanced_hsv = cv2.merge([h, s, v])
+        enhanced_bgr = cv2.cvtColor(enhanced_hsv, cv2.COLOR_HSV2BGR)
+        
+        if self.debug:
+            print(f"Applied saturation boost: {boost_factor}x")
+            
+        return enhanced_bgr
+        
     def preprocess_image(self):
         """Apply preprocessing to improve detection"""
+        # Apply saturation enhancement first if enabled
+        if self.saturation_boost != 1.0:
+            self.image = self.enhance_color_saturation(self.image, self.saturation_boost)
+            if self.debug:
+                print(f"Enhanced image saturation by {self.saturation_boost}x")
+        
         # Convert to HSV for better color detection
         self.hsv = cv2.cvtColor(self.image, cv2.COLOR_BGR2HSV)
         
@@ -305,8 +348,10 @@ class StickyNoteDetector:
         
         # Define which colors are similar and should be merged
         similar_colors = {
-            'yellow': ['light_yellow'],
-            'light_yellow': ['yellow'],
+            'yellow': ['greenish_yellow', 'warm_yellow', 'white'],
+            'greenish_yellow': ['yellow', 'warm_yellow', 'white'],
+            'warm_yellow': ['yellow', 'greenish_yellow', 'white'],
+            'white': ['yellow', 'greenish_yellow', 'warm_yellow'],
             'blue': ['light_blue'],
             'light_blue': ['blue'],
             'green': ['light_green'],
@@ -734,8 +779,9 @@ class StickyNoteDetector:
         x_end = min(self.width, x + w + padding)
         y_end = min(self.height, y + h + padding)
         
-        # Extract region
-        region = self.original_image[y_start:y_end, x_start:x_end]
+        # Extract region from the saturated image if saturation boost was applied, otherwise use original
+        source_image = self.image if self.saturation_boost != 1.0 else self.original_image
+        region = source_image[y_start:y_end, x_start:x_end]
         
         # Save cropped image
         cropped_path = f'cropped_note_{note_id}.jpg'
@@ -762,8 +808,9 @@ class StickyNoteDetector:
         x_end = min(self.width, x + w + padding)
         y_end = min(self.height, y + h + padding)
         
-        # Extract region
-        region = self.original_image[y_start:y_end, x_start:x_end]
+        # Extract region from the saturated image if saturation boost was applied, otherwise use original
+        source_image = self.image if self.saturation_boost != 1.0 else self.original_image
+        region = source_image[y_start:y_end, x_start:x_end]
         
         # Enhanced preprocessing for better OCR
         gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
@@ -846,7 +893,9 @@ class StickyNoteDetector:
     
     def create_overlay_image(self, output_path='overlay_result.jpg'):
         """Create an overlay image showing all detected sticky notes"""
-        overlay = self.original_image.copy()
+        # Use the saturated image if saturation boost was applied, otherwise use original
+        source_image = self.image if self.saturation_boost != 1.0 else self.original_image
+        overlay = source_image.copy()
         
         for i, note in enumerate(self.detected_notes):
             x, y, w, h = note['bbox']
@@ -877,6 +926,13 @@ class StickyNoteDetector:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_dir = f"sticky_notes_output_{timestamp}"
         os.makedirs(output_dir, exist_ok=True)
+        
+        # Save enhanced image for debugging if saturation was boosted
+        if self.saturation_boost != 1.0:
+            enhanced_path = os.path.join(output_dir, 'enhanced_saturation.jpg')
+            cv2.imwrite(enhanced_path, self.image)
+            if self.debug:
+                print(f"Saved saturation-enhanced image: {enhanced_path}")
         
         results = []
         
@@ -954,6 +1010,7 @@ class StickyNoteDetector:
             f.write(f"Transcription: {'Enabled' if transcribe else 'Disabled'}\n")
             if transcribe and llm_provider:
                 f.write(f"Transcription method: {llm_provider.upper()}\n")
+            f.write(f"Saturation boost: {self.saturation_boost}x\n")
             f.write("\n")
             
             for result in results:
@@ -1737,6 +1794,7 @@ def main():
     parser.add_argument('--api-key', help='API key for the selected LLM provider (overrides env vars)')
     parser.add_argument('--api-key-env', help='Environment variable name containing the API key')
     parser.add_argument('--ollama-model', default='llava', help='Ollama model to use for transcription (default: llava)')
+    parser.add_argument('--saturation-boost', type=float, help='Color saturation boost factor (1.0=no change, 1.5=50%% boost, 2.0=double, etc.)')
     
     args = parser.parse_args()
     
@@ -1777,7 +1835,7 @@ def main():
         return
     
     # Process the image - debug parameter from command line takes precedence over env var
-    detector = StickyNoteDetector(args.image_path, debug=args.debug if args.debug else None)
+    detector = StickyNoteDetector(args.image_path, debug=args.debug if args.debug else None, saturation_boost=args.saturation_boost)
     results, output_dir = detector.process_all_notes(
         transcribe=args.transcribe,
         llm_provider=args.llm,

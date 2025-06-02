@@ -49,5 +49,7 @@ Thumbs.db
 *.temp
 cropped_note_*.jpg
 *.jpeg
+*.jpg
 test_*.py
 *example.py
+sticky_notes_output*
