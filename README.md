@@ -9,6 +9,7 @@ A Python script that automatically detects and optionally transcribes sticky not
 - Visual overlay showing detected notes
 - JSON output for programmatic access
 - Debug mode for troubleshooting detection issues
+- Intelligent size filtering to remove false positives
 
 ## Installation
 
@@ -61,6 +62,15 @@ The detector uses:
 - Shape validation (area, aspect ratio, extent, vertices)
 - Confidence scoring based on multiple validation criteria
 - Non-aggressive clustering to prevent over-merging of nearby notes
+- Relative size filtering to remove unreasonably small false positives
+
+### Size Filtering
+The detector automatically filters out detections that are too small compared to other detected notes:
+- Removes detections smaller than 10% of the median size
+- Removes detections smaller than 70% of the 30th percentile size
+- Ensures all detections meet an absolute minimum size threshold
+
+This prevents false positives from tiny colored regions while preserving legitimate sticky notes of varying sizes.
 
 ## Troubleshooting
 
@@ -69,6 +79,11 @@ If not detecting enough sticky notes:
 2. Check lighting conditions in the image
 3. Ensure sticky notes have good contrast with background
 4. Consider adjusting the validation parameters in the code
+
+If getting too many false positives:
+1. The size filter should remove most tiny false detections automatically
+2. Check if non-sticky note objects match the color ranges
+3. Consider adjusting color ranges for your specific sticky notes
 
 ## Example
 

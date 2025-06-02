@@ -324,6 +324,48 @@ class StickyNoteDetector:
                     print(f"  Filtered out region with confidence {region['confidence']:.1f}%")
         return filtered
     
+    def filter_by_relative_size(self, regions, size_ratio_threshold=0.1):
+        """Filter out regions that are too small compared to the median size"""
+        if not regions:
+            return regions
+            
+        # Calculate areas and find median
+        areas = [r['area'] for r in regions]
+        areas.sort()
+        median_area = areas[len(areas) // 2] if areas else 0
+        
+        # Calculate the 30th percentile for a more robust lower bound
+        percentile_30_idx = int(len(areas) * 0.3)
+        percentile_30_area = areas[percentile_30_idx] if percentile_30_idx < len(areas) else median_area
+        
+        # Use a combination of percentile and ratio thresholds
+        # Minimum should be at least 10% of median or 70% of 30th percentile
+        min_area_threshold = max(
+            median_area * size_ratio_threshold,
+            percentile_30_area * 0.7
+        )
+        
+        # Also set an absolute minimum based on image size
+        # A real sticky note should be at least 0.001% of the image (10x higher than shape validation)
+        absolute_min = self.width * self.height * 0.0001
+        min_area_threshold = max(min_area_threshold, absolute_min)
+        
+        filtered = []
+        for region in regions:
+            if region['area'] >= min_area_threshold:
+                filtered.append(region)
+            elif self.debug:
+                print(f"  Filtered by relative size: area {region['area']:.0f} < threshold {min_area_threshold:.0f} (median: {median_area:.0f})")
+                
+        if self.debug and len(filtered) < len(regions):
+            print(f"\nSize filtering: removed {len(regions) - len(filtered)} tiny regions")
+            print(f"  Median area: {median_area:.0f}")
+            print(f"  30th percentile: {percentile_30_area:.0f}")
+            print(f"  Min area threshold: {min_area_threshold:.0f}")
+            print(f"  Absolute minimum: {absolute_min:.0f}")
+            
+        return filtered
+    
     def detect_all_notes(self):
         """Detect all sticky notes of all colors"""
         self.preprocess_image()
@@ -354,20 +396,27 @@ class StickyNoteDetector:
         
         if self.debug:
             print(f"Total regions after confidence filter: {len(filtered_regions)}")
+        
+        # NEW: Filter by relative size to remove tiny false positives
+        size_filtered_regions = self.filter_by_relative_size(filtered_regions, size_ratio_threshold=0.1)
+        
+        if self.debug:
+            print(f"Total regions after size filter: {len(size_filtered_regions)}")
             print("\n=== Debug Summary ===")
             print(f"Total contours found: {self.debug_info['total_contours']}")
             print(f"Filtered by shape validation: {self.debug_info['filtered_by_shape']}")
             print(f"Regions before merging: {self.debug_info['pre_merge_count']}")
             print(f"Regions after merging: {self.debug_info['post_merge_count']}")
             print(f"Filtered by low confidence: {self.debug_info['filtered_by_confidence']}")
-            print(f"Final detection count: {len(filtered_regions)}")
+            print(f"Filtered by relative size: {len(filtered_regions) - len(size_filtered_regions)}")
+            print(f"Final detection count: {len(size_filtered_regions)}")
             print("=" * 40)
         
         # Sort by position (top to bottom, left to right)
-        filtered_regions.sort(key=lambda x: (x['bbox'][1], x['bbox'][0]))
+        size_filtered_regions.sort(key=lambda x: (x['bbox'][1], x['bbox'][0]))
         
-        self.detected_notes = filtered_regions
-        return filtered_regions
+        self.detected_notes = size_filtered_regions
+        return size_filtered_regions
     
     def extract_text_from_region(self, bbox, note_id):
         """Extract text from a specific region using improved OCR preprocessing"""
