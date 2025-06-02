@@ -12,6 +12,9 @@ import os
 import json
 from datetime import datetime
 import argparse
+import base64
+import requests
+from typing import Optional, Tuple
 
 class StickyNoteDetector:
     def __init__(self, image_path, debug=False):
@@ -24,38 +27,68 @@ class StickyNoteDetector:
         # Improved color ranges for sticky notes (HSV) - more precise
         self.color_ranges = {
             'yellow': {
-                'lower': np.array([20, 80, 100]),  # Less restrictive yellow
+                'lower': np.array([22, 100, 120]),  # More saturated yellow only
                 'upper': np.array([30, 255, 255]),
                 'color': (0, 255, 255)  # Yellow in BGR
             },
-            'pink': {
-                'lower': np.array([150, 50, 50]),   # Less restrictive pink
-                'upper': np.array([180, 255, 255]),
-                'color': (255, 0, 255)  # Magenta in BGR
+            'light_yellow': {
+                'lower': np.array([20, 30, 150]),   # Low saturation yellow
+                'upper': np.array([30, 100, 255]),  # Cap at 100 saturation to avoid overlap with yellow
+                'color': (100, 255, 255)  # Light Yellow in BGR
             },
             'orange': {
-                'lower': np.array([10, 80, 100]),  # Less restrictive orange
-                'upper': np.array([20, 255, 255]),
+                'lower': np.array([8, 120, 100]),   # More saturated orange, narrower range
+                'upper': np.array([18, 255, 255]),  # Reduced upper bound to avoid red overlap
                 'color': (0, 165, 255)  # Orange in BGR
             },
+            'red': {
+                'lower': np.array([0, 140, 50]),    # Higher saturation to avoid pink overlap
+                'upper': np.array([6, 255, 255]),   # Reduced upper bound to avoid pink
+                'color': (0, 0, 255)  # Red in BGR
+            },
+            'red_high': {
+                'lower': np.array([174, 140, 50]),  # Higher saturation, higher hue start
+                'upper': np.array([180, 255, 255]),
+                'color': (0, 0, 255)  # Red in BGR
+            },
+            'pink': {
+                'lower': np.array([155, 60, 80]),   # Higher hue start, higher saturation and value
+                'upper': np.array([175, 255, 255]), # Broader range for pink detection
+                'color': (255, 0, 255)  # Magenta in BGR
+            },
+            'green': {
+                'lower': np.array([45, 60, 50]),    # Narrower green range, higher saturation
+                'upper': np.array([75, 255, 255]),  # Reduced upper bound to avoid cyan
+                'color': (0, 255, 0)  # Green in BGR
+            },
+            'light_green': {
+                'lower': np.array([40, 30, 150]),   # Low saturation green
+                'upper': np.array([75, 60, 255]),   # Cap at 60 saturation, match green hue range
+                'color': (150, 255, 150)  # Light green in BGR
+            },
+            'cyan': {
+                'lower': np.array([80, 60, 50]),    # Higher hue start, higher saturation
+                'upper': np.array([100, 255, 255]), # Broader range for cyan detection
+                'color': (255, 255, 0)  # Cyan in BGR
+            },
             'blue': {
-                'lower': np.array([100, 50, 50]),  # Less restrictive blue
+                'lower': np.array([105, 100, 50]),  # Higher hue start to avoid cyan overlap
                 'upper': np.array([130, 255, 255]),
                 'color': (255, 100, 0)  # Blue in BGR
             },
-            'green': {
-                'lower': np.array([40, 50, 50]),    # Less restrictive green
-                'upper': np.array([80, 255, 255]),
-                'color': (0, 255, 0)  # Green in BGR
+            'light_blue': {
+                'lower': np.array([100, 30, 150]),  # Low saturation blue
+                'upper': np.array([130, 100, 255]), # Cap at 100 saturation
+                'color': (255, 200, 150)  # Light blue in BGR
             },
-            'light_yellow': {
-                'lower': np.array([20, 30, 150]),  # Very light yellow
-                'upper': np.array([30, 100, 255]),
-                'color': (100, 255, 255)  # Light Yellow in BGR
+            'purple': {
+                'lower': np.array([130, 50, 50]),   # Purple/violet range
+                'upper': np.array([150, 255, 255]),
+                'color': (255, 0, 128)  # Purple in BGR
             },
             'light_pink': {
-                'lower': np.array([0, 20, 150]),   # Very light pink (low saturation)
-                'upper': np.array([10, 80, 255]),
+                'lower': np.array([150, 20, 150]),  # Very light pink, different hue from pink
+                'upper': np.array([160, 50, 255]),  # Lower saturation than regular pink
                 'color': (255, 150, 255)  # Light pink in BGR
             }
         }
@@ -167,10 +200,24 @@ class StickyNoteDetector:
         """Detect regions of specific color with improved filtering"""
         hsv_enhanced = cv2.cvtColor(self.enhanced, cv2.COLOR_BGR2HSV)
         
-        # Create mask for the color
-        mask = cv2.inRange(hsv_enhanced, 
-                          self.color_ranges[color_name]['lower'],
-                          self.color_ranges[color_name]['upper'])
+        # Special handling for red which wraps around in HSV
+        if color_name == 'red':
+            # Red wraps around in HSV, so we need to check both low and high hue ranges
+            mask_low = cv2.inRange(hsv_enhanced, 
+                                  self.color_ranges['red']['lower'],
+                                  self.color_ranges['red']['upper'])
+            mask_high = cv2.inRange(hsv_enhanced, 
+                                   self.color_ranges['red_high']['lower'],
+                                   self.color_ranges['red_high']['upper'])
+            mask = cv2.bitwise_or(mask_low, mask_high)
+        elif color_name == 'red_high':
+            # Skip red_high as it's handled by red
+            return []
+        else:
+            # Create mask for the color
+            mask = cv2.inRange(hsv_enhanced, 
+                              self.color_ranges[color_name]['lower'],
+                              self.color_ranges[color_name]['upper'])
         
         # Morphological operations to clean up the mask
         kernel_small = np.ones((3,3), np.uint8)
@@ -218,6 +265,23 @@ class StickyNoteDetector:
         """Merge overlapping or nearby regions (for stacked notes)"""
         if not regions:
             return regions
+        
+        # Define which colors are similar and should be merged
+        similar_colors = {
+            'yellow': ['light_yellow'],
+            'light_yellow': ['yellow'],
+            'blue': ['light_blue'],
+            'light_blue': ['blue'],
+            'green': ['light_green'],
+            'light_green': ['green'],
+            'pink': ['light_pink'],  # Removed red overlap since ranges are now separated
+            'light_pink': ['pink'],
+            'red': ['red_high'],  # Only merge red variants, not pink
+            'red_high': ['red'],
+            'orange': [],  # Orange is distinct
+            'purple': [],  # Purple is distinct
+            'cyan': []     # Cyan is distinct
+        }
             
         merged = []
         used = set()
@@ -257,25 +321,34 @@ class StickyNoteDetector:
                     containment1 = intersection_area / region1['area'] if region1['area'] > 0 else 0
                     containment2 = intersection_area / region2['area'] if region2['area'] > 0 else 0
                     
+                    # Check if colors are the same or similar
+                    color1 = region1['color']
+                    color2 = region2['color']
+                    colors_match = (color1 == color2) or (color2 in similar_colors.get(color1, []))
+                    
                     # Only merge if high overlap or one is contained in the other
-                    # Made more restrictive to prevent over-clustering
-                    if iou > overlap_threshold or containment1 > 0.9 or containment2 > 0.9:
-                        # Additional check: ensure the regions are of similar color
-                        if region1['color'] == region2['color']:
-                            # Merge regions
-                            merged_bbox[0] = min(merged_bbox[0], x2)
-                            merged_bbox[1] = min(merged_bbox[1], y2)
-                            merged_bbox[2] = max(merged_bbox[2], x2 + w2)
-                            merged_bbox[3] = max(merged_bbox[3], y2 + h2)
-                            group.append(region2)
-                            used.add(j)
+                    # AND colors are the same or similar
+                    if colors_match and (iou > overlap_threshold or containment1 > 0.9 or containment2 > 0.9):
+                        # Merge regions
+                        merged_bbox[0] = min(merged_bbox[0], x2)
+                        merged_bbox[1] = min(merged_bbox[1], y2)
+                        merged_bbox[2] = max(merged_bbox[2], x2 + w2)
+                        merged_bbox[3] = max(merged_bbox[3], y2 + h2)
+                        group.append(region2)
+                        used.add(j)
             
-            # Create merged region
+            # Create merged region - use the primary (non-light) color if available
+            primary_color = group[0]['color']
+            for region in group:
+                if not region['color'].startswith('light_') and region['color'] != 'red_high':
+                    primary_color = region['color']
+                    break
+            
             x, y, x2, y2 = merged_bbox
             merged_region = {
                 'bbox': (x, y, x2 - x, y2 - y),
                 'area': (x2 - x) * (y2 - y),
-                'color': group[0]['color'],
+                'color': primary_color,
                 'sub_regions': len(group),
                 'confidence': self.calculate_region_confidence(group)
             }
@@ -324,7 +397,7 @@ class StickyNoteDetector:
                     print(f"  Filtered out region with confidence {region['confidence']:.1f}%")
         return filtered
     
-    def filter_by_relative_size(self, regions, size_ratio_threshold=0.1):
+    def filter_by_relative_size(self, regions, size_ratio_threshold=0.3):
         """Filter out regions that are too small compared to the median size"""
         if not regions:
             return regions
@@ -347,7 +420,7 @@ class StickyNoteDetector:
         
         # Also set an absolute minimum based on image size
         # A real sticky note should be at least 0.001% of the image (10x higher than shape validation)
-        absolute_min = self.width * self.height * 0.0001
+        absolute_min = self.width * self.height * 0.001
         min_area_threshold = max(min_area_threshold, absolute_min)
         
         filtered = []
@@ -417,6 +490,142 @@ class StickyNoteDetector:
         
         self.detected_notes = size_filtered_regions
         return size_filtered_regions
+    
+    def encode_image_to_base64(self, image_path: str) -> str:
+        """Encode image to base64 for API calls"""
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
+    
+    def transcribe_with_claude(self, image_path: str, api_key: str) -> Tuple[str, float]:
+        """Transcribe text using Claude API"""
+        try:
+            base64_image = self.encode_image_to_base64(image_path)
+            
+            headers = {
+                "anthropic-version": "2023-06-01",
+                "x-api-key": api_key,
+                "content-type": "application/json"
+            }
+            
+            data = {
+                "model": "claude-3-haiku-20240307",  # Fast and cost-effective
+                "max_tokens": 1024,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Please transcribe any text you see in this sticky note image. If the text is handwritten, do your best to interpret it. Only return the transcribed text, nothing else."
+                        },
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": base64_image
+                            }
+                        }
+                    ]
+                }]
+            }
+            
+            response = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                text = result['content'][0]['text'].strip()
+                # Confidence is not directly provided by Claude, so we'll use a high value for successful transcriptions
+                confidence = 95.0 if text else 0.0
+                return text, confidence
+            else:
+                print(f"Claude API error: {response.status_code} - {response.text}")
+                return "", 0.0
+                
+        except Exception as e:
+            print(f"Error transcribing with Claude: {e}")
+            return "", 0.0
+    
+    def transcribe_with_chatgpt(self, image_path: str, api_key: str) -> Tuple[str, float]:
+        """Transcribe text using ChatGPT API"""
+        try:
+            base64_image = self.encode_image_to_base64(image_path)
+            
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "model": "gpt-4o-mini",  # More cost-effective vision model
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Please transcribe any text you see in this sticky note image. If the text is handwritten, do your best to interpret it. Only return the transcribed text, nothing else."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]
+                }],
+                "max_tokens": 300
+            }
+            
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                text = result['choices'][0]['message']['content'].strip()
+                # Confidence is not directly provided by ChatGPT, so we'll use a high value for successful transcriptions
+                confidence = 95.0 if text else 0.0
+                return text, confidence
+            else:
+                print(f"ChatGPT API error: {response.status_code} - {response.text}")
+                return "", 0.0
+                
+        except Exception as e:
+            print(f"Error transcribing with ChatGPT: {e}")
+            return "", 0.0
+    
+    def extract_text_with_llm(self, bbox: Tuple[int, int, int, int], note_id: int, llm_provider: str, api_key: str) -> Tuple[str, float]:
+        """Extract text using LLM instead of local OCR"""
+        x, y, w, h = bbox
+        
+        # Add padding around the region
+        padding = 15
+        x_start = max(0, x - padding)
+        y_start = max(0, y - padding)
+        x_end = min(self.width, x + w + padding)
+        y_end = min(self.height, y + h + padding)
+        
+        # Extract region
+        region = self.original_image[y_start:y_end, x_start:x_end]
+        
+        # Save cropped image
+        cropped_path = f'cropped_note_{note_id}.jpg'
+        cv2.imwrite(cropped_path, region)
+        
+        # Transcribe using selected LLM
+        if llm_provider == 'claude':
+            return self.transcribe_with_claude(cropped_path, api_key)
+        elif llm_provider == 'chatgpt':
+            return self.transcribe_with_chatgpt(cropped_path, api_key)
+        else:
+            return "", 0.0
     
     def extract_text_from_region(self, bbox, note_id):
         """Extract text from a specific region using improved OCR preprocessing"""
@@ -534,7 +743,7 @@ class StickyNoteDetector:
         cv2.imwrite(output_path, overlay)
         return output_path
     
-    def process_all_notes(self, transcribe=False):
+    def process_all_notes(self, transcribe=False, llm_provider=None, api_key=None):
         """Complete processing pipeline"""
         print("Detecting sticky notes...")
         notes = self.detect_all_notes()
@@ -548,13 +757,20 @@ class StickyNoteDetector:
         results = []
         
         if transcribe:
-            print("Extracting text from each note...")
+            if llm_provider:
+                print(f"Extracting text from each note using {llm_provider.upper()}...")
+                print(f"Note: This will make {len(notes)} API calls. Costs may apply.")
+            else:
+                print("Extracting text from each note using local OCR...")
         
         for i, note in enumerate(notes):
             if transcribe:
                 print(f"Processing note {i + 1}/{len(notes)}")
-                # Extract text
-                text, ocr_confidence = self.extract_text_from_region(note['bbox'], i + 1)
+                # Extract text using LLM or local OCR
+                if llm_provider and api_key:
+                    text, ocr_confidence = self.extract_text_with_llm(note['bbox'], i + 1, llm_provider, api_key)
+                else:
+                    text, ocr_confidence = self.extract_text_from_region(note['bbox'], i + 1)
             else:
                 # No transcription - just save the detection
                 text = ""
@@ -568,7 +784,8 @@ class StickyNoteDetector:
                 'text': text,
                 'ocr_confidence': ocr_confidence,
                 'detection_confidence': note.get('confidence', 0),
-                'sub_regions': note.get('sub_regions', 1)
+                'sub_regions': note.get('sub_regions', 1),
+                'transcription_method': llm_provider.upper() if llm_provider else 'OCR' if transcribe else 'None'
             }
             results.append(result)
             
@@ -577,7 +794,7 @@ class StickyNoteDetector:
                 if os.path.exists(f'cropped_note_{i + 1}.jpg'):
                     os.rename(f'cropped_note_{i + 1}.jpg', 
                              os.path.join(output_dir, f'cropped_note_{i + 1}.jpg'))
-                if os.path.exists(f'cropped_note_{i + 1}_preprocessed.jpg'):
+                if os.path.exists(f'cropped_note_{i + 1}_preprocessed.jpg') and not llm_provider:
                     os.rename(f'cropped_note_{i + 1}_preprocessed.jpg', 
                              os.path.join(output_dir, f'cropped_note_{i + 1}_preprocessed.jpg'))
         
@@ -598,7 +815,10 @@ class StickyNoteDetector:
             f.write(f"Total notes detected: {len(results)}\n")
             f.write(f"Image: {self.image_path}\n")
             f.write(f"Processed: {datetime.now()}\n")
-            f.write(f"Transcription: {'Enabled' if transcribe else 'Disabled'}\n\n")
+            f.write(f"Transcription: {'Enabled' if transcribe else 'Disabled'}\n")
+            if transcribe and llm_provider:
+                f.write(f"Transcription method: {llm_provider.upper()}\n")
+            f.write("\n")
             
             for result in results:
                 f.write(f"Note {result['note_id']} ({result['color']}):\n")
@@ -614,7 +834,8 @@ class StickyNoteDetector:
         print(f"- Overlay image: overlay_result.jpg")
         if transcribe:
             print(f"- Individual crops: cropped_note_X.jpg")
-            print(f"- Preprocessed images: cropped_note_X_preprocessed.jpg")
+            if not llm_provider:
+                print(f"- Preprocessed images: cropped_note_X_preprocessed.jpg")
         print(f"- JSON data: detection_results.json")
         print(f"- Summary: summary.txt")
         
@@ -626,8 +847,30 @@ def main():
     parser.add_argument('--tesseract-path', help='Path to tesseract executable (if needed)')
     parser.add_argument('--debug', action='store_true', help='Enable debug mode to see filtering details')
     parser.add_argument('--transcribe', action='store_true', help='Enable OCR transcription of detected notes (default: detection only)')
+    parser.add_argument('--llm', choices=['claude', 'chatgpt'], help='Use LLM for transcription instead of local OCR')
+    parser.add_argument('--api-key', help='API key for the selected LLM provider')
+    parser.add_argument('--api-key-env', help='Environment variable name containing the API key (default: ANTHROPIC_API_KEY for Claude, OPENAI_API_KEY for ChatGPT)')
     
     args = parser.parse_args()
+    
+    # Handle API key
+    api_key = None
+    if args.llm:
+        if args.api_key:
+            api_key = args.api_key
+        else:
+            # Try environment variable
+            env_var = args.api_key_env
+            if not env_var:
+                env_var = 'ANTHROPIC_API_KEY' if args.llm == 'claude' else 'OPENAI_API_KEY'
+            
+            api_key = os.environ.get(env_var)
+            if not api_key:
+                print(f"Error: No API key provided. Use --api-key or set {env_var} environment variable")
+                return
+        
+        # Enable transcription if LLM is selected
+        args.transcribe = True
     
     # Set tesseract path if provided
     if args.tesseract_path:
@@ -640,7 +883,11 @@ def main():
     
     # Process the image
     detector = StickyNoteDetector(args.image_path, debug=args.debug)
-    results, output_dir = detector.process_all_notes(transcribe=args.transcribe)
+    results, output_dir = detector.process_all_notes(
+        transcribe=args.transcribe,
+        llm_provider=args.llm,
+        api_key=api_key
+    )
     
     print(f"\nProcessing complete! Check '{output_dir}' for results.")
 
