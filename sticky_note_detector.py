@@ -1115,6 +1115,12 @@ class StickyNoteDetector:
             font-size: 12px;
             margin: 2px;
         }}
+        .btn-purple {{
+            background-color: #9c27b0;
+        }}
+        .btn-purple:hover {{
+            background-color: #7b1fa2;
+        }}
         table {{
             width: 100%;
             border-collapse: collapse;
@@ -1226,6 +1232,7 @@ class StickyNoteDetector:
             max-width: 100%;
             max-height: 90vh;
             border-radius: 8px;
+            cursor: crosshair;
         }}
         .close-overlay {{
             position: absolute;
@@ -1340,6 +1347,46 @@ class StickyNoteDetector:
             width: 120px;
             text-align: center;
         }}
+        .custom-row {{
+            background-color: #e8f5e9 !important;
+            border-left: 4px solid #4CAF50;
+        }}
+        .drawing-box {{
+            position: absolute;
+            border: 3px solid #4CAF50;
+            background-color: rgba(76, 175, 80, 0.2);
+            pointer-events: none;
+            display: none;
+        }}
+        .drawing-instructions {{
+            background-color: #fff3cd;
+            color: #856404;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+            display: none;
+        }}
+        .color-selector {{
+            margin: 10px 0;
+            display: none;
+        }}
+        .color-option {{
+            display: inline-block;
+            width: 30px;
+            height: 30px;
+            margin: 5px;
+            border: 2px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+        }}
+        .color-option:hover {{
+            border-color: #333;
+            transform: scale(1.1);
+        }}
+        .color-option.selected {{
+            border-color: #4CAF50;
+            border-width: 3px;
+        }}
     </style>
 </head>
 <body>
@@ -1359,7 +1406,25 @@ class StickyNoteDetector:
             <button class="btn btn-secondary" onclick="saveEdits()">💾 Save Edits</button>
             <button class="btn btn-warning" onclick="downloadMarkdown()">📄 Download as Markdown</button>
             <button class="btn view-overlay-btn" onclick="showOverlay()">🖼️ View Full Image</button>
+            <button class="btn btn-purple" onclick="toggleDrawMode()">✏️ Draw New Note</button>
             <div id="statusMessage" class="status-message"></div>
+        </div>
+
+        <div id="drawingInstructions" class="drawing-instructions">
+            <strong>Drawing Mode Active!</strong> Click and drag on the full image to draw a bounding box for a new note.
+            <br>Press ESC or click "Draw New Note" again to cancel.
+        </div>
+
+        <div id="colorSelector" class="color-selector">
+            <strong>Select color for new note:</strong>
+            <div class="color-option" style="background-color: #FFD700;" data-color="yellow" title="Yellow"></div>
+            <div class="color-option" style="background-color: #FF8C00;" data-color="orange" title="Orange"></div>
+            <div class="color-option" style="background-color: #DC143C;" data-color="red" title="Red"></div>
+            <div class="color-option" style="background-color: #32CD32;" data-color="green" title="Green"></div>
+            <div class="color-option" style="background-color: #4169E1;" data-color="blue" title="Blue"></div>
+            <div class="color-option" style="background-color: #00CED1;" data-color="cyan" title="Cyan"></div>
+            <div class="color-option" style="background-color: #8A2BE2;" data-color="purple" title="Purple"></div>
+            <div class="color-option selected" style="background-color: #FFFFFF; border-color: #333;" data-color="white" title="White"></div>
         </div>
 
         <table id="notesTable">
@@ -1378,18 +1443,36 @@ class StickyNoteDetector:
     </div>
 
     <!-- Overlay Modal -->
-    <div id="overlayModal" class="overlay-modal" onclick="hideOverlay()">
+    <div id="overlayModal" class="overlay-modal">
         <div class="overlay-content">
             <span class="close-overlay" onclick="hideOverlay()">&times;</span>
-            <img id="overlayImage" class="overlay-image" src="overlay_result.jpg" alt="Full Detection Results">
+            <div style="position: relative; display: inline-block;">
+                <img id="overlayImage" class="overlay-image" src="overlay_result.jpg" alt="Full Detection Results">
+                <div id="drawingBox" class="drawing-box"></div>
+            </div>
         </div>
     </div>
 
     <script>
         let editMode = false;
+        let drawMode = false;
+        let isDrawing = false;
+        let startX, startY;
+        let selectedColor = 'white';
         let originalData = {original_data};
         let deletedRows = new Set(); // Track deleted row indices
         let subNoteCounter = 0; // Counter for sub-notes
+        let customNoteCounter = 0; // Counter for custom notes
+        let imageScale = 1; // Scale factor for the displayed image
+
+        // Initialize color selector
+        document.querySelectorAll('.color-option').forEach(option => {{
+            option.addEventListener('click', function() {{
+                document.querySelectorAll('.color-option').forEach(o => o.classList.remove('selected'));
+                this.classList.add('selected');
+                selectedColor = this.getAttribute('data-color');
+            }});
+        }});
 
         function toggleEditMode() {{
             editMode = !editMode;
@@ -1406,6 +1489,31 @@ class StickyNoteDetector:
                 button.textContent = '📝 Toggle Edit Mode';
                 button.style.backgroundColor = '#4CAF50';
                 showStatus('View mode enabled.', 'success');
+            }}
+        }}
+
+        function toggleDrawMode() {{
+            drawMode = !drawMode;
+            const button = document.querySelector('button[onclick="toggleDrawMode()"]');
+            const instructions = document.getElementById('drawingInstructions');
+            const colorSelector = document.getElementById('colorSelector');
+            
+            if (drawMode) {{
+                button.textContent = '❌ Cancel Drawing';
+                button.style.backgroundColor = '#f44336';
+                instructions.style.display = 'block';
+                colorSelector.style.display = 'block';
+                showStatus('Drawing mode enabled. Open the full image to draw a bounding box.', 'success');
+                // Automatically open the overlay if not already open
+                if (document.getElementById('overlayModal').style.display !== 'block') {{
+                    showOverlay();
+                }}
+            }} else {{
+                button.textContent = '✏️ Draw New Note';
+                button.style.backgroundColor = '#9c27b0';
+                instructions.style.display = 'none';
+                colorSelector.style.display = 'none';
+                showStatus('Drawing mode disabled.', 'success');
             }}
         }}
 
@@ -1464,18 +1572,206 @@ class StickyNoteDetector:
             const modal = document.getElementById('overlayModal');
             modal.style.display = 'block';
             document.body.style.overflow = 'hidden'; // Prevent background scrolling
+            
+            // Calculate image scale when overlay is shown
+            setTimeout(() => {{
+                const img = document.getElementById('overlayImage');
+                const naturalWidth = img.naturalWidth;
+                const displayedWidth = img.width;
+                imageScale = displayedWidth / naturalWidth;
+            }}, 100);
         }}
 
         function hideOverlay() {{
             const modal = document.getElementById('overlayModal');
             modal.style.display = 'none';
             document.body.style.overflow = 'auto'; // Restore scrolling
+            
+            // Reset drawing if in progress
+            if (isDrawing) {{
+                isDrawing = false;
+                document.getElementById('drawingBox').style.display = 'none';
+            }}
+        }}
+
+        // Drawing functionality
+        const overlayImage = document.getElementById('overlayImage');
+        const drawingBox = document.getElementById('drawingBox');
+
+        overlayImage.addEventListener('mousedown', function(e) {{
+            if (!drawMode) return;
+            
+            const rect = this.getBoundingClientRect();
+            startX = e.clientX - rect.left;
+            startY = e.clientY - rect.top;
+            isDrawing = true;
+            
+            drawingBox.style.left = startX + 'px';
+            drawingBox.style.top = startY + 'px';
+            drawingBox.style.width = '0px';
+            drawingBox.style.height = '0px';
+            drawingBox.style.display = 'block';
+        }});
+
+        overlayImage.addEventListener('mousemove', function(e) {{
+            if (!isDrawing || !drawMode) return;
+            
+            const rect = this.getBoundingClientRect();
+            const currentX = e.clientX - rect.left;
+            const currentY = e.clientY - rect.top;
+            
+            const width = Math.abs(currentX - startX);
+            const height = Math.abs(currentY - startY);
+            const left = Math.min(startX, currentX);
+            const top = Math.min(startY, currentY);
+            
+            drawingBox.style.left = left + 'px';
+            drawingBox.style.top = top + 'px';
+            drawingBox.style.width = width + 'px';
+            drawingBox.style.height = height + 'px';
+        }});
+
+        overlayImage.addEventListener('mouseup', function(e) {{
+            if (!isDrawing || !drawMode) return;
+            
+            isDrawing = false;
+            const rect = this.getBoundingClientRect();
+            const endX = e.clientX - rect.left;
+            const endY = e.clientY - rect.top;
+            
+            const width = Math.abs(endX - startX);
+            const height = Math.abs(endY - startY);
+            
+            // Minimum size check
+            if (width < 20 || height < 20) {{
+                drawingBox.style.display = 'none';
+                showStatus('Bounding box too small. Please draw a larger box.', 'error');
+                return;
+            }}
+            
+            // Convert to original image coordinates
+            const x = Math.min(startX, endX) / imageScale;
+            const y = Math.min(startY, endY) / imageScale;
+            const w = width / imageScale;
+            const h = height / imageScale;
+            
+            // Create new note
+            createCustomNote(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+            
+            // Hide drawing box and exit draw mode
+            drawingBox.style.display = 'none';
+            toggleDrawMode();
+        }});
+
+        function createCustomNote(x, y, w, h) {{
+            customNoteCounter++;
+            const noteId = `custom_${{customNoteCounter}}`;
+            const tbody = document.querySelector('#notesTable tbody');
+            
+            // Create new row
+            const newRow = document.createElement('tr');
+            newRow.className = 'custom-row';
+            newRow.setAttribute('data-note-id', noteId);
+            newRow.setAttribute('data-custom', 'true');
+            
+            // Create a simple colored rectangle as placeholder image
+            const canvas = document.createElement('canvas');
+            canvas.width = 100;
+            canvas.height = 100;
+            const ctx = canvas.getContext('2d');
+            
+            // Fill with selected color
+            const colorMap = {{
+                'yellow': '#FFD700',
+                'orange': '#FF8C00',
+                'red': '#DC143C',
+                'green': '#32CD32',
+                'blue': '#4169E1',
+                'cyan': '#00CED1',
+                'purple': '#8A2BE2',
+                'white': '#FFFFFF'
+            }};
+            
+            ctx.fillStyle = colorMap[selectedColor] || '#CCCCCC';
+            ctx.fillRect(0, 0, 100, 100);
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 2;
+            ctx.strokeRect(0, 0, 100, 100);
+            
+            const imageDataUrl = canvas.toDataURL();
+            
+            newRow.innerHTML = `
+                <td><strong>#${{noteId}}</strong></td>
+                <td>
+                    <img src="${{imageDataUrl}}" alt="Custom Note" class="note-image" style="max-width: 100px; max-height: 100px;">
+                    <br>
+                    <span style="color: #4CAF50; font-weight: bold;">✏️ Custom Note</span>
+                    <br>
+                    <button class="details-toggle" onclick="toggleDetails('${{noteId}}')">
+                        📊 Technical Details
+                    </button>
+                    <div class="technical-details" id="details-${{noteId}}">
+                        <strong>Color:</strong> <span class="color-badge" style="background-color: ${{colorMap[selectedColor]}};">${{selectedColor}}</span><br>
+                        <strong>Bounding Box:</strong> <span class="bbox">x:${{x}}, y:${{y}}, w:${{w}}, h:${{h}}</span><br>
+                        <strong>Area:</strong> ${{(w * h).toLocaleString()}} px²<br>
+                        <strong>Type:</strong> User-drawn<br>
+                        <strong>Created:</strong> ${{new Date().toLocaleString()}}
+                    </div>
+                </td>
+                <td class="text-content">
+                    <div class="text-display"><span class="no-text">Enter text for this custom note</span></div>
+                    <textarea class="text-input" placeholder="Enter text for this custom note..."></textarea>
+                </td>
+                <td class="delete-column">
+                    <button class="btn btn-danger btn-small" onclick="removeCustomNote('${{noteId}}')" title="Remove this custom note">
+                        🗑️ Delete
+                    </button>
+                </td>
+            `;
+            
+            tbody.appendChild(newRow);
+            
+            // Store custom note data
+            if (!window.customNotes) window.customNotes = [];
+            window.customNotes.push({{
+                note_id: noteId,
+                bbox: [x, y, w, h],
+                color: selectedColor,
+                area: w * h,
+                is_custom: true,
+                created_at: new Date().toISOString()
+            }});
+            
+            showStatus(`Custom note created at position (${{x}}, ${{y}}) with size ${{w}}x${{h}}`, 'success');
+            updateSummary();
+            
+            // Auto-enable edit mode for the new note
+            if (!editMode) {{
+                toggleEditMode();
+            }}
+        }}
+
+        function removeCustomNote(noteId) {{
+            const row = document.querySelector(`tr[data-note-id="${{noteId}}"]`);
+            if (row) {{
+                row.remove();
+                // Remove from custom notes array
+                if (window.customNotes) {{
+                    window.customNotes = window.customNotes.filter(note => note.note_id !== noteId);
+                }}
+                showStatus(`Custom note removed`, 'success');
+                updateSummary();
+            }}
         }}
 
         // Close overlay with Escape key
         document.addEventListener('keydown', function(e) {{
             if (e.key === 'Escape') {{
-                hideOverlay();
+                if (drawMode) {{
+                    toggleDrawMode();
+                }} else {{
+                    hideOverlay();
+                }}
             }}
         }});
 
@@ -1504,17 +1800,21 @@ class StickyNoteDetector:
 
         function updateSummary() {{
             const totalNotes = originalData.length;
+            const customCount = window.customNotes ? window.customNotes.length : 0;
             const deletedCount = deletedRows.size;
-            const activeCount = totalNotes - deletedCount;
+            const activeCount = totalNotes - deletedCount + customCount;
             
             // Update summary in the page
             const summaryDiv = document.querySelector('.summary');
             const totalNotesP = summaryDiv.querySelector('p:nth-child(2)');
-            if (deletedCount > 0) {{
-                totalNotesP.innerHTML = `<strong>Total Notes Detected:</strong> ${{totalNotes}} (Active: ${{activeCount}}, Deleted: ${{deletedCount}})`;
-            }} else {{
-                totalNotesP.innerHTML = `<strong>Total Notes Detected:</strong> ${{totalNotes}}`;
+            let summaryText = `<strong>Total Notes Detected:</strong> ${{totalNotes}}`;
+            if (customCount > 0 || deletedCount > 0) {{
+                summaryText += ` (Active: ${{activeCount}}`;
+                if (deletedCount > 0) summaryText += `, Deleted: ${{deletedCount}}`;
+                if (customCount > 0) summaryText += `, Custom: ${{customCount}}`;
+                summaryText += `)`;
             }}
+            totalNotesP.innerHTML = summaryText;
         }}
 
         function showStatus(message, type) {{
@@ -1561,13 +1861,41 @@ class StickyNoteDetector:
                 }}
             }});
 
-            // Add metadata about deletions and sub-notes
+            // Add custom notes
+            if (window.customNotes) {{
+                window.customNotes.forEach(customNote => {{
+                    const row = document.querySelector(`tr[data-note-id="${{customNote.note_id}}"]`);
+                    if (row) {{
+                        const textInput = row.querySelector('.text-input');
+                        const noteData = {{
+                            note_id: customNote.note_id,
+                            color: customNote.color,
+                            bbox: customNote.bbox,
+                            area: customNote.area,
+                            text: textInput ? textInput.value : '',
+                            ocr_confidence: 0,
+                            detection_confidence: 100,
+                            sub_regions: 1,
+                            transcription_method: 'Manual',
+                            is_custom: true,
+                            created_at: customNote.created_at,
+                            edited: true,
+                            edit_timestamp: new Date().toISOString()
+                        }};
+                        editedData.push(noteData);
+                    }}
+                }});
+            }}
+
+            // Add metadata about deletions, sub-notes, and custom notes
             const subNoteCount = document.querySelectorAll('.sub-row').length;
+            const customNoteCount = window.customNotes ? window.customNotes.length : 0;
             const metadata = {{
                 original_count: originalData.length,
                 final_count: editedData.length,
                 deleted_count: deletedRows.size,
                 sub_note_count: subNoteCount,
+                custom_note_count: customNoteCount,
                 deleted_note_ids: Array.from(deletedRows).map(i => originalData[i].note_id),
                 export_timestamp: new Date().toISOString()
             }};
@@ -1590,7 +1918,7 @@ class StickyNoteDetector:
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
 
-            showStatus(`Edits saved! ${{editedData.length}} notes included, ${{deletedRows.size}} deleted, ${{subNoteCount}} sub-notes.`, 'success');
+            showStatus(`Edits saved! ${{editedData.length}} notes included (${{customNoteCount}} custom), ${{deletedRows.size}} deleted, ${{subNoteCount}} sub-notes.`, 'success');
         }}
 
         function downloadMarkdown() {{
@@ -1620,12 +1948,28 @@ class StickyNoteDetector:
                 }}
             }});
 
+            // Add custom notes
+            if (window.customNotes) {{
+                window.customNotes.forEach(customNote => {{
+                    const row = document.querySelector(`tr[data-note-id="${{customNote.note_id}}"]`);
+                    if (row) {{
+                        const textInput = row.querySelector('.text-input');
+                        const text = textInput ? textInput.value.trim() : '';
+                        if (text) {{
+                            markdown += `${{noteNumber}}. ${{text}} *(custom)*\\n`;
+                            noteNumber++;
+                        }}
+                    }}
+                }});
+            }}
+
             if (noteNumber === 1) {{
                 markdown += 'No text content found.\\n';
             }}
 
             // Add metadata
             const subNoteCount = document.querySelectorAll('.sub-row').length;
+            const customNoteCount = window.customNotes ? window.customNotes.length : 0;
             markdown += `\\n---\\n`;
             markdown += `*Exported: ${{new Date().toLocaleString()}}*\\n`;
             markdown += `*Total notes: ${{noteNumber - 1}} (from ${{originalData.length}} detected)*\\n`;
@@ -1634,6 +1978,9 @@ class StickyNoteDetector:
             }}
             if (subNoteCount > 0) {{
                 markdown += `*Includes ${{subNoteCount}} sub-notes from broken notes*\\n`;
+            }}
+            if (customNoteCount > 0) {{
+                markdown += `*Includes ${{customNoteCount}} custom user-drawn notes*\\n`;
             }}
 
             const blob = new Blob([markdown], {{
